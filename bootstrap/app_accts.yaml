@@ -1,0 +1,117 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: we assume these roles have already been provisioned in app acounts.
+Parameters:
+  PipelineArtifactsBucket:
+    Type: String
+  LoggingBucket:
+    Type: String
+  DeploymentKeyArn:
+    Type: String
+Resources:
+
+  WindowsInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      InstanceProfileName: WindowsCodeDeployer
+      Roles:
+        - !Ref WindowsEc2Role
+
+  WindowsEc2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactsBucket}"
+
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                Resource:
+                  - !Sub "arn:aws:s3:::${PipelineArtifactsBucket}/*"
+
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !Ref DeploymentKeyArn
+
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:RegisterApplicationRevision
+                Resource: "*"
+
+  TerraformRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: DeployerRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - arn:aws:iam::886389433241:root
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub "arn:aws:s3:::${LoggingBucket}"
+                  - !Sub "arn:aws:s3:::${LoggingBucket}/*"
+                  - !Sub "arn:aws:s3:::${PipelineArtifactsBucket}"
+                  - !Sub "arn:aws:s3:::${PipelineArtifactsBucket}/*"
+
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !Ref DeploymentKeyArn
+
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - autoscaling:*
+                  - elasticloadbalancing:*
+                  - codecommit:*
+                  - codedeploy:*
+                  - iam:Get*
+                  - iam:List*
+                  - iam:Describe*
+                  - iam:PassRole
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
