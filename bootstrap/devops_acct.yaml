@@ -1,0 +1,350 @@
+Resources:
+  StateBucket:
+    Type: AWS::S3::Bucket
+    Properties: {}
+
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PipelineArtifactsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "${PipelineArtifactsBucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: !Sub "${PipelineArtifactsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+  LogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  LogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowAccessFromAppAccts
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - "arn:aws:iam::975399109150:root"
+                - "arn:aws:iam::248536880173:root"
+                - "arn:aws:iam::319341254651:root"
+            Action:
+              - 's3:*'
+            Resource: !Sub "${LogBucket.Arn}/*"
+
+  TFRemoteLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+
+  DeploymentKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK For Deployment Artifcacts
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: '*'
+          - Sid: Enable BU 001 Usage
+            Effect: Allow
+            Principal:
+              AWS: "arn:aws:iam::975399109150:root"
+            Action: kms:*
+            Resource: '*'
+          - Sid: Enable BU 002 Usage
+            Effect: Allow
+            Principal:
+              AWS: "arn:aws:iam::248536880173:root"
+            Action: kms:*
+            Resource: '*'
+          - Sid: Enable BU 003 Usage
+            Effect: Allow
+            Principal:
+              AWS: "arn:aws:iam::319341254651:root"
+            Action: kms:*
+            Resource: '*'
+
+  TerraformAutomationRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - "arn:aws:iam::975399109150:root"
+                - "arn:aws:iam::248536880173:root"
+                - "arn:aws:iam::319341254651:root"
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: !Sub "arn:aws:dynamodb:*:*:table/${TFRemoteLockTable}"
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt StateBucket.Arn
+                  - !Sub "${StateBucket.Arn}/*"
+  CodebuildRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !GetAtt PipelineArtifactsBucket.Arn
+                  - !Sub "${PipelineArtifactsBucket.Arn}/*"
+
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt DeploymentKey.Arn
+
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - "arn:aws:iam::975399109150:role/DeployerRole"
+                  - "arn:aws:iam::248536880173:role/DeployerRole"
+                  - "arn:aws:iam::319341254651:role/DeployerRole"
+
+              - Effect: Allow
+                Resource: !Sub "arn:aws:dynamodb:*:*:table/${TFRemoteLockTable}"
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt StateBucket.Arn
+                  - !Sub "${StateBucket.Arn}/*"
+
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+  PipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !GetAtt PipelineArtifactsBucket.Arn
+                  - !Sub "${PipelineArtifactsBucket.Arn}/*"
+
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt DeploymentKey.Arn
+
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - cloudformation.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+                      - codebuild.amazonaws.com
+                      - codedeploy.amazonaws.com
+
+              - Effect: Allow
+                Action:
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: "*"
+
+              - Effect: Allow
+                Action:
+                  - cloudwatch:*
+                  - sns:*
+                  - sqs:*
+                Resource: "*"
+
+              - Action:
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource: "*"
+                Effect: Allow
+
+              - Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+                Effect: Allow
+
+              - Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: "*"
+                Effect: Allow
+
+              - Effect: Allow
+                Action:
+                  - servicecatalog:ListProvisioningArtifacts
+                  - servicecatalog:CreateProvisioningArtifact
+                  - servicecatalog:DescribeProvisioningArtifact
+                  - servicecatalog:DeleteProvisioningArtifact
+                  - servicecatalog:UpdateProduct
+                Resource: "*"
+
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: "*"
+
+  CloudwatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codepipeline:StartPipelineExecution
+                Resource: '*'
+Outputs:
+  PipelineArtifactsBucket:
+    Value: !Ref PipelineArtifactsBucket
+  StateBucket:
+    Value: !Ref StateBucket
+  LogBucket:
+    Value: !Ref LogBucket
+  TFRemoteLockTable:
+    Value: !Ref TFRemoteLockTable
+  PipelineRole:
+    Value: !GetAtt PipelineRole.Arn
+  TerraformAutomationRole:
+    Value: !GetAtt TerraformAutomationRole.Arn
+  DeploymentKey:
+    Value: !GetAtt DeploymentKey.Arn
+  ArtifactsKeyId:
+    Value: !GetAtt DeploymentKey.KeyId
+  CodebuildRole:
+    Value: !Ref CodebuildRole
+  CodepipelineRole:
+    Value: !Ref PipelineRole
+  CloudwatchEventRole:
+    Value: !Ref CloudwatchEventRole
