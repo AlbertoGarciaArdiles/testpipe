@@ -1,0 +1,26 @@
+version: 0.2
+env:
+  shell: bash
+  git-credential-helper: yes
+phases:
+  install:
+    commands:
+      - PROJECT_BIN_DIR="${CODEBUILD_SRC_DIR}/bin"
+      - |
+        if [ ! -d "${PROJECT_BIN_DIR}" ]; then
+          mkdir $PROJECT_BIN_DIR
+          ZIP_NAME="terraform_linux_amd64.zip"
+          wget --quiet -O $ZIP_NAME "https://releases.hashicorp.com/terraform/0.13.2/terraform_0.13.2_linux_amd64.zip"
+          unzip -o $ZIP_NAME -d "${PROJECT_BIN_DIR}/"
+          rm -f $ZIP_NAME
+        fi
+      - export PATH=$PROJECT_BIN_DIR:$PATH
+  build:
+    commands:
+      - REPO_NAME=`echo ${REPO_URL} | awk -F":" ' { print $2 } ' | sed 's/\/\/[^/]*//g' | sed 's/.git/_mirror/g' | sed 's/^\///g' | tr "/" "_"  | tr -d "\n" | tr -d " "`
+      - chmod +x helpers.sh
+      - ./helpers.sh ${APP_NAME} ${BACKEND_STACK_NAME} ${AWS_REGION} ${TERRAFORM_VERSION} ${DEV_ACCOUNT_ID} ${HOM_ACCOUNT_ID} ${PROD_ACCOUNT_ID} $REPO_NAME
+artifacts:
+  files:
+    - '**/*'
+  discard-paths: no
